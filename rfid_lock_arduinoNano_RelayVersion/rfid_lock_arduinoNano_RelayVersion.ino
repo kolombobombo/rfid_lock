@@ -29,12 +29,17 @@
 			SDA: D7
 
 */
+String strData = "";                        //for RX Data
+boolean recievedFlag;                       //for RX Data
+static uint32_t OpenDoorTimer = 0;          // Таймер открытой двери
 
 #include <SPI.h>          // Библиотека SPI для MFRC522    
 #include <MFRC522.h>      // Библиотека RFID модуля MFRC522
 #include <EEPROM.h>       // Библиотека EEPROM для хранения ключей
+#include <TimerMs.h>
 
 #define LOCK_TIMEOUT  1000  // Время до индикации закрытой  двери, в мс 
+#define DOOR_TIMEOUT  60000  // Время до сообщения об открытой двери, в мс 
 #define RELAY_DELAY 100   // Время замыкания реле, в мс 
 #define MAX_TAGS        5  // Максимальное количество хранимых меток - ключей 
 #define RELAY_PIN       10   // Пин реле
@@ -61,20 +66,17 @@ bool isOpen(void) {             // Функция должна возвраща�
   return digitalRead(DOOR_PIN); // Если дверь открыта - концевик размокнут, на пине HIGH
 }
 
-void lock(void) {               // Функция сообщит о закрытии двери
-  Serial.println("door lock");
-}
-
 void unlock(void) {               // Функция должна разблокировать замок
   digitalWrite(RELAY_PIN, LOW);   //подаем на реле low level trigger, замыкаем
-  delay(RELAY_DELAY);				//время замыкания на замок 12В, в мс
-  digitalWrite(RELAY_PIN, HIGH);	//отпускаем реле, размыкаем
+  delay(RELAY_DELAY);				//время замыкания цепи на электромеханический замок, в мс
+  digitalWrite(RELAY_PIN, HIGH);	//подаем на реле HIGH level trigger, размыкаем
   delay(100);
   Serial.println("relay low level trigger " + String(RELAY_DELAY)+ "ms.");
 }
 
 
 bool locked = true;       // Флаг состояния замка
+bool opened = true;       // Флаг состояния замка
 bool needLock = false;    // Служебный флаг
 uint8_t savedTags = 0;    // кол-во записанных меток
 
@@ -83,7 +85,7 @@ void setup() {
   Serial.begin(9600);       // Initialize serial communications with the PC
   SPI.begin();              // Init SPI bus
   rfid.PCD_Init();          // Init MFRC522 card
-  
+
   // Настраиваем пины
   pinMode(BTN_PIN, INPUT_PULLUP);
   pinMode(DOOR_PIN, INPUT_PULLUP);
@@ -120,12 +122,12 @@ void setup() {
       Serial.println("Door is open");
       ledSetup(SUCCESS);    // Зеленый лед
       locked = false;       // Замок открыт
-      //unlock();             // На всякий случай дернем замок
+
     } else {                // Метки есть, но дверь закрыта
       Serial.println("Door is close");
       ledSetup(DECLINE);    // Красный лед
       locked = true;        // Замок закрыт
-      //lock();               // Блокируем замок
+
     }
   } else {                  // Если меток не записано
     Serial.println("savedTags = 0");
@@ -136,8 +138,27 @@ void setup() {
 
 }
 
+
+  
 void loop() {
   static uint32_t lockTimeout;             // Таймер таймаута для блокировки замка
+  static uint32_t DoorTimeout; // Таймаут двери
+
+ // Принимаем данные по UART
+ while (Serial.available() > 0) {         // ПОКА есть что то на вход    
+    strData += (char)Serial.read();        // забиваем строку принятыми данными
+    recievedFlag = true;                   // поднять флаг что получили данные
+    delay(2);                              // ЗАДЕРЖКА. Без неё работает некорректно!
+  }
+  if (recievedFlag) {                      // если данные получены
+    Serial.println("Data RX in Arduino Nano: " + strData);
+    if (strData == "open_door_now"){      // Открытие по фразе из Serial-порта
+      unlock();
+      }
+    strData = "";                          // очистить
+    recievedFlag = false;                  // опустить флаг
+  }  
+
 
   // Открытие по нажатию кнопки изнутри
   static uint32_t buttonTimeout; // Таймаут кнопки
@@ -153,16 +174,38 @@ void loop() {
   }
 
   // Проверка концевика двери
-  if (isOpen()) {                          // Если дверь открыта
+  if (isOpen()) {                          // Если дверь открыта  
     lockTimeout = millis();                // Обновляем таймер
-  }
+    // Сообщаем что дверь открыта
+    if (!opened) {
+      ledSetup(SUCCESS); // Зеленый лед
+      Serial.println("Door is open");
+      locked = false;     
+      opened = true;    // Ставим флаг открытой двери
+      OpenDoorTimer = 0;
+      DoorTimeout = millis(); 
+     } else {
+        if (millis() - DoorTimeout >= DOOR_TIMEOUT) {  
+          OpenDoorTimer = OpenDoorTimer + ((millis() - DoorTimeout)/1000);
+          Serial.println("Door is open "+String(OpenDoorTimer)+" s.");       // Сообщаем если дверь открыта больше DOOR_TIMEOUT сек
+          if (OpenDoorTimer == 600){
+            Serial.println("Ahtung! Door is open 10 min.");
+            }
+          DoorTimeout = millis(); 
+        }
+      }   
+   }
 
-  // Блокировка замка по таймауту (ключей > 0, замок разлочен, таймаут вышел)
-  if (savedTags > 0 and !locked and millis() - lockTimeout >= LOCK_TIMEOUT) {
+ 
+  // Сообщаем о закрытой двери если концевик замкнут больше значения LOCK_TIMEOUT
+  if (!locked and millis() - lockTimeout >= LOCK_TIMEOUT) {
     ledSetup(DECLINE); // Красный лед
     Serial.println("Door is close");
-    locked = true;     // Ставим флаг
+    locked = true;     // Ставим флаг закрытой двери
+    opened = false;
+    OpenDoorTimer = 0;
   }
+
 
   // Поднесение метки
   static uint32_t rfidTimeout; // Таймаут рфид
@@ -179,14 +222,13 @@ void loop() {
         Serial.print(F("Tag UID:"));
         dump_byte_array(rfid.uid.uidByte, rfid.uid.size);
         Serial.println();
-        
         unlock();                                                    // Разблокируем
         indicate(SUCCESS);                                           // Если нашли - подаем сигнал успеха
         lockTimeout = millis();                                      // Обновляем таймаут
         locked = false;                                              // Замок разблокирован
       } else if (millis() - rfidTimeout >= 500) {                    // Метка не найдена (с таймаутом)
         Serial.print(F("Tag is NOT found. Tag UID:"));
-        dump_byte_array(rfid.uid.uidByte, rfid.uid.size);
+        dump_byte_array(rfid.uid.uidByte, rfid.uid.size);             //выводим серийный номер метки
         Serial.println();
         indicate(DECLINE);                                           // Выдаем отказ
       }
@@ -236,7 +278,7 @@ void indicate(uint8_t signal) {
       noTone(BUZZER_PIN);
       return;
     case BUTTON:
-      Serial.println("BUTTON PRESS");
+      //Serial.println("BUTTON PRESS");
       tone(BUZZER_PIN, 200);
       delay(330);
       noTone(BUZZER_PIN);
