@@ -32,9 +32,13 @@ BLYNK_CONNECTED() {
 BLYNK_WRITE(V0)
 {
   int pinGPIO0 = param.asInt(); 
+  if (pinGPIO0 == HIGH) {
+    Serial.print("open_door_now");
+  } 
   digitalWrite(RELE, pinGPIO0);
   delay(RELAY_DELAY);
   digitalWrite(RELE, LOW);
+  
 }
 
 BLYNK_WRITE(V2)
@@ -47,13 +51,11 @@ BLYNK_WRITE(V100)
 {
   // if you type "open" into Terminal Widget - 
   if (String("open") == param.asStr()) {
-      terminal_print_date_time();
-    terminal.println("Relay HIGH LWL, delay = "+String(RELAY_DELAY)) ;
-    digitalWrite (RELE, HIGH);
-    delay(RELAY_DELAY);
-    digitalWrite (RELE, LOW);
+    //terminal_print_date_time();
+    terminal.println("Data TX to Arduino:") ;
+    Serial.print("open_door_now");
   } else {
-    terminal_print_date_time();
+    //terminal_print_date_time();
     terminal.print(" RX:");
     terminal.write(param.getBuffer(), param.getLength());
     terminal.println();
@@ -69,12 +71,15 @@ BLYNK_WRITE(V100)
 void setup()
 {
   Serial.begin(9600);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  
+  setSyncInterval(10 * 60); // Sync interval in seconds (10 minutes) 
+    
   pinMode(RELE, OUTPUT);
   pinMode(GPIO2, OUTPUT);
-  //digitalWrite (RELE, HIGH); //включаем если реле Low LVL
  
   Blynk.begin(auth, ssid, pass);
-  setSyncInterval(10 * 60); // Sync interval in seconds (10 minutes)
   
   terminal.clear();
   terminal.print("Startup : ");
@@ -94,7 +99,7 @@ void loop()
   }
   if (recievedFlag) {                      // если данные получены
     //terminal.println(strData);               // вывести
-    terminal_print_date_time();
+    //terminal_print_date_time();
     Blynk.virtualWrite(V100, strData);
     strData = "";                          // очистить
     recievedFlag = false;                  // опустить флаг
